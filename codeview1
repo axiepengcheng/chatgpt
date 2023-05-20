@@ -1,0 +1,1204 @@
+unit uFrmDuplicateMailsInFoldersMain;
+
+interface
+
+uses
+  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants,
+  System.Classes, Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
+  VirtualTrees, Vcl.StdCtrls, Vcl.Imaging.pngimage, Vcl.ExtCtrls, UExThread,
+  Globals, frmBase, MapiDefs, Vcl.ComCtrls, Mapiform, mapix, mapitags, mapicode,
+  uMAPI_Globals, uMAPIFunction, MAPIUtil, MapiGuid, System.ImageList,
+  Vcl.ImgList, Vcl.Menus, LanguageXML, DuplicateMailsGlobals,
+  uFrmDuplicateMailsInFoldersResult, UMAPIStore, UMAPICommFunc,
+  System.Win.Registry, System.RegularExpressions;
+
+type
+  TFrmDuplicateMailsInFoldersMain = class(TBaseForm)
+    vrtstrFolderList: TVirtualStringTree;
+    btnOK: TButton;
+    btnCancel: TButton;
+    chkScreenAllFolder: TCheckBox;
+    lblHint: TLabel;
+    imgTitleHint: TImage;
+    imgScreenAllFodlerHint: TImage;
+    tmrLoad: TTimer;
+    pnlPb: TPanel;
+    lblPbHint: TLabel;
+    btnClosePb: TButton;
+    pbHandle: TProgressBar;
+    ilItem: TImageList;
+    pmSelect: TPopupMenu;
+    mniSelectAll: TMenuItem;
+    mniSelectNode: TMenuItem;
+    mniN1: TMenuItem;
+    mniSelectAllSub: TMenuItem;
+    mniSelectNodeSub: TMenuItem;
+    mniN2: TMenuItem;
+    mniUnFoldSub: TMenuItem;
+    mniFold: TMenuItem;
+    lblSelCountHint: TLabel;
+    lblSelCount: TLabel;
+    procedure FormCreate(Sender: TObject);
+    procedure tmrLoadTimer(Sender: TObject);
+    procedure vrtstrFolderListGetText(Sender: TBaseVirtualTree; Node: PVirtualNode; Column: TColumnIndex; TextType: TVSTTextType; var CellText: string);
+    procedure vrtstrFolderListInitNode(Sender: TBaseVirtualTree; ParentNode, Node: PVirtualNode; var InitialStates: TVirtualNodeInitStates);
+    procedure vrtstrFolderListGetImageIndex(Sender: TBaseVirtualTree; Node: PVirtualNode; Kind: TVTImageKind; Column: TColumnIndex; var Ghosted: Boolean; var ImageIndex: TImageIndex);
+    procedure btnCancelClick(Sender: TObject);
+    procedure FormClose(Sender: TObject; var Action: TCloseAction);
+    procedure vrtstrFolderListContextPopup(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
+    procedure mniSelectAllClick(Sender: TObject);
+    procedure mniSelectNodeClick(Sender: TObject);
+    procedure mniSelectAllSubClick(Sender: TObject);
+    procedure mniSelectNodeSubClick(Sender: TObject);
+    procedure mniUnFoldSubClick(Sender: TObject);
+    procedure mniFoldClick(Sender: TObject);
+    procedure btnOKClick(Sender: TObject);
+    procedure chkScreenAllFolderClick(Sender: TObject);
+    procedure vrtstrFolderListFreeNode(Sender: TBaseVirtualTree; Node: PVirtualNode);
+    procedure btnClosePbClick(Sender: TObject);
+    procedure FormShow(Sender: TObject);
+    procedure FormKeyPress(Sender: TObject; var Key: Char);
+    procedure vrtstrFolderListChecked(Sender: TBaseVirtualTree; Node: PVirtualNode);
+  private
+    { Private declarations }
+    //载入数据文件到树形控件中
+    mIntNodeHeight: Integer;
+    mExThree: TExThread;
+    mBol: BOOLEAN;
+    mMFItemList: TArray<TMAPIFolderItem>;
+    mSelectPNode: PVirtualNode;
+    mShowResult: Boolean;
+//    mBolExit, mBolRun: Boolean;
+    mIntCallPMNum: integer;
+    procedure LoadStore;
+    procedure LoadStoreToTree;
+    procedure SetControlEnabled(pBol: boolean);
+    procedure SetNodeCheck(pPVNode: PVirtualNode; pBol: Boolean);
+    procedure SetNodeExpanded(pPVNode: PVirtualNode; pBol: Boolean);
+//    procedure CallProcessMessages;
+    //读取注册表
+    procedure ReadTregDate;
+    //保持数据到注册表
+    procedure SaveTregDate;
+  protected
+    mIntSelCount: integer;
+    procedure WndProc(var pMessage: TMessage); override;
+  public
+    { Public declarations }
+  end;
+
+var
+  FrmDuplicateMailsInFoldersMain: TFrmDuplicateMailsInFoldersMain;
+
+implementation
+
+{$R *.dfm}
+procedure TFrmDuplicateMailsInFoldersMain.WndProc(var pMessage: TMessage);
+begin
+  inherited;
+  if (pMessage.Msg = VK_ESCAPE) then
+    Self.btnCancelClick(Self.btnCancel);
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.btnCancelClick(Sender: TObject);
+begin
+  inherited;
+  self.Close;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.btnClosePbClick(Sender: TObject);
+var
+  xIAM: Integer;
+  mnu: HMENU;
+begin
+  if mBolRun then
+  begin
+    xIAM := Application.MessageBox(PChar(g_LanguageXML.GetLanguageData('frmContactItemRepeat_ExitHint')), 'Kutools for Outlook', MB_YESNO + MB_ICONSTOP);
+    if xIAM <> 6 then
+    begin
+      Exit;
+    end
+    else
+    begin
+      //让程序安全退出
+      Self.mBolExit := True;
+      Exit;
+    end;
+  end;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.btnOKClick(Sender: TObject);
+
+  procedure GetSubItemCheckToArr(pPVNode: PVirtualNode);
+  var
+    xPVNodeData, xD: TMAPIFolderItem;
+    xPVNodeSub: PVirtualNode;
+  begin
+    if pPVNode.CheckState = csCheckedNormal then
+    begin
+      SetLength(gMAPIFolderSelectionArr, Length(gMAPIFolderSelectionArr) + 1);
+      xPVNodeData := self.vrtstrFolderList.GetNodeData(pPVNode);
+      New(xD);
+      xD.FName := xPVNodeData.FName;
+      xD.FID := xPVNodeData.FID;
+      xD.SID := xPVNodeData.SID;
+      xD.FSBin := CopySBinary(xPVNodeData.FSBin);
+      xD.FID := ExMAPITSBinaryToEntryID(xD.FSBin);
+//      xD.FSBin_D := CopySBinary(xPVNodeData.FSBin);
+      xD.FPath := xPVNodeData.FPath;
+      xD.IntType := xPVNodeData.IntType;
+      xD.FLevel := xPVNodeData.FLevel;
+      xD.FolderDelectIndex := xPVNodeData.FolderDelectIndex;
+      gMAPIFolderSelectionArr[Length(gMAPIFolderSelectionArr) - 1] := xD;
+    end;
+    if pPVNode.ChildCount > 0 then
+    begin
+      xPVNodeSub := nil;
+      xPVNodeSub := pPVNode.FirstChild;
+
+      while xPVNodeSub <> nil do
+      begin
+        GetSubItemCheckToArr(xPVNodeSub);
+        try
+          xPVNodeSub := xPVNodeSub.NextSibling;
+        except
+          xPVNodeSub := nil;
+        end;
+      end;
+    end;
+
+  end;
+
+var
+  xPVNode: PVirtualNode;
+begin
+  inherited;
+  SetLength(gMAPIFolderSelectionArr, 0);
+  //递归获取文件夹勾选
+  xPVNode := nil;
+  xPVNode := Self.vrtstrFolderList.GetFirst(False);
+  while xPVNode <> nil do
+  begin
+    GetSubItemCheckToArr(xPVNode);
+    try
+      xPVNode := xPVNode.NextSibling;
+    except
+      xPVNode := nil
+    end;
+  end;
+  if Length(gMAPIFolderSelectionArr) > 0 then
+  begin
+
+//    FrmDuplicateMailsInFoldersResult := tFrmDuplicateMailsInFoldersResult.CreateParented(FindWindow('rctrl_renwnd32', nil)); //(Self.ParentWindow); //Create(nil);
+    FrmDuplicateMailsInFoldersResult := tFrmDuplicateMailsInFoldersResult.Create(nil);
+
+    try
+      Self.MoveTop(True);
+    except
+    end;
+    Self.Visible := False;
+
+    FrmDuplicateMailsInFoldersResult.Show;
+    mShowResult := true;
+    Self.SaveTregDate;
+    self.Close;
+  end
+  else
+  begin
+    MessageBox(gOlkHWND, PChar(g_LanguageXML.GetLanguageData('FrmDuplicateMailsMain_SelectFolderHint')), 'Kutools for Outlook', MB_OK + MB_ICONINFORMATION);
+    exit;
+  end;
+
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.chkScreenAllFolderClick(Sender: TObject);
+begin
+  inherited;
+  gBolScreenAll := self.chkScreenAllFolder.Checked;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.FormClose(Sender: TObject; var Action: TCloseAction);
+var
+  xFNum: integer;
+begin
+  inherited;
+  if not mShowResult then
+  begin
+//    LogoffMAPISession;
+    SetLength(gMAPIFolderSelectionArr, 0);
+  end;
+  for xFNum := 0 to Length(mMFItemList) - 1 do
+  begin
+    try
+      FreeMemory(mMFItemList[xFNum].FSBin.lpb);
+//      Finalize(mMFItemList[xFNum]^);
+    except
+
+    end;
+  end;
+  SetLength(mMFItemList, 0);
+  try
+    Action := caFree;
+  except
+
+  end;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.FormCreate(Sender: TObject);
+var
+  xLbl: TLabel;
+  xColumns: TVirtualTreeColumns;
+begin
+  if not LoadMAPISession then
+  begin
+    //语言包，需要翻译
+    Application.MessageBox('接口访问错误，请重新启动！', 'Kutools for Outlook', MB_ICONEXCLAMATION);
+    Exit;
+  end;
+  mBolRun := False;
+  mBolExit := False;
+  mIntCallPMNum := 0;
+  mIntSelCount := 0;
+  mIntNodeHeight := MulDiv(17, Screen.PixelsPerInch, GDefaultPixelsPerInch);
+
+  xLbl := TLabel.Create(nil);
+  xLbl.AutoSize := True;
+
+  Self.vrtstrFolderList.NodeDataSize := SizeOf(RMAPIFolderItem);
+
+  Self.Caption := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_Caption'); //'重复邮件 - 选择文件夹';
+  Self.btnOK.Caption := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_btnOK_Caption'); //'确定';
+  Self.btnCancel.Caption := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_btnCancel_Caption'); //'取消';
+  Self.lblHint.Caption := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_lblHint_Caption'); //'请选择需要处理的文件夹（更多操作可在右键菜单中选择）：';
+  Self.imgTitleHint.Hint := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_imgTitleHint_Caption'); //'勾选需要处理的文件夹进行查找重复邮件；当邮件标题、邮件正文和邮件附件相同时，会判断为重复邮件。';
+  Self.chkScreenAllFolder.Caption := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_chkScreenAllFolder_Caption'); //'跨文件筛选';
+  Self.lblPbHint.Caption := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_lblPbHint_Caption'); //'载入中。。。';
+  Self.btnClosePb.Caption := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_btnClosePb_Caption'); //'取消';
+  //语言包，未翻译
+  Self.lblSelCountHint.Caption := '当前已选文件夹数量：';
+  xColumns := Self.vrtstrFolderList.Header.Columns;
+  xColumns.Add;
+  xColumns.Items[xColumns.Count - 1].Text := g_LanguageXML.GetLanguageData('FrmDuplicateMailsInFoldersMain_vrtstrFolderList_Caption'); //'文件夹名称';
+  xColumns.Items[xColumns.Count - 1].Width := vrtstrFolderList.Width - MulDiv(32, Screen.PixelsPerInch, GDefaultPixelsPerInch);
+  Self.vrtstrFolderList.Header.Height := MulDiv(16, Screen.PixelsPerInch, GDefaultPixelsPerInch);
+
+  //
+  Self.imgTitleHint.ShowHint := True;
+  self.lblHint.Hint := Self.imgTitleHint.Hint;
+  Self.lblHint.ShowHint := True;
+  self.imgScreenAllFodlerHint.Hint := PChar(g_LanguageXML.GetLanguageData('FrmDuplicateMailsSetHandle_chkScreenAllFolder_Hint'));
+  Self.imgScreenAllFodlerHint.ShowHint := True;
+  self.chkScreenAllFolder.Hint := Self.imgScreenAllFodlerHint.Hint;
+  Self.chkScreenAllFolder.ShowHint := True;
+  mSelectPNode := nil;
+  xLbl.Caption := Self.chkScreenAllFolder.Caption;
+  Self.chkScreenAllFolder.Width := xLbl.Width + G_MulDiv_22;
+  Self.lblSelCount.Left := Self.lblSelCountHint.Left + Self.lblSelCountHint.Width + G_MulDiv_4;
+  Self.imgScreenAllFodlerHint.Left := Self.chkScreenAllFolder.Left + chkScreenAllFolder.Width;
+  Self.imgScreenAllFodlerHint.Top := self.chkScreenAllFolder.Top + G_MulDiv_2;
+  Self.imgTitleHint.Left := Self.lblHint.Left + Self.lblHint.Width;
+  self.imgTitleHint.Top := Self.lblHint.Top + G_MulDiv_2;
+  mShowResult := False;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.FormKeyPress(Sender: TObject; var Key: Char);
+begin
+  inherited;
+  if Key = #13 then
+    self.btnOKClick(Self.btnOK);
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.FormShow(Sender: TObject);
+begin
+  inherited;
+  self.tmrLoad.Enabled := True;
+end;
+
+//设置控件是否可用
+procedure TFrmDuplicateMailsInFoldersMain.SetControlEnabled(pBol: boolean);
+begin
+  self.pnlPb.Visible := not pBol;
+  self.btnOK.Enabled := pBol;
+  self.btnCancel.Enabled := pBol;
+  Self.chkScreenAllFolder.Enabled := pBol;
+  Self.vrtstrFolderList.Enabled := pBol;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.SetNodeCheck(pPVNode: PVirtualNode; pBol: Boolean);
+var
+  xCount, XFNum: integer;
+  xPVNodeItem: PVirtualNode;
+begin
+  xCount := pPVNode.ChildCount;
+  if xCount > 0 then
+  begin
+    vrtstrFolderList.Expanded[pPVNode] := True;
+    xPVNodeItem := pPVNode.FirstChild;
+    if pBol then
+    begin
+      if xPVNodeItem.CheckState <> csCheckedNormal then
+      begin
+        xPVNodeItem.CheckState := csCheckedNormal;
+        self.mIntSelCount := Self.mIntSelCount + 1;
+      end;
+
+    end
+    else
+    begin
+      if xPVNodeItem.CheckState <> csUncheckedNormal then
+      begin
+        xPVNodeItem.CheckState := csUncheckedNormal;
+        self.mIntSelCount := Self.mIntSelCount - 1;
+      end;
+    end;
+
+    SetNodeCheck(xPVNodeItem, pBol);
+    for xCount := 2 to xCount do
+    begin
+      xPVNodeItem := xPVNodeItem.NextSibling;
+      if pBol then
+      begin
+        if xPVNodeItem.CheckState <> csCheckedNormal then
+        begin
+          xPVNodeItem.CheckState := csCheckedNormal;
+          self.mIntSelCount := Self.mIntSelCount + 1;
+        end;
+      end
+      else
+      begin
+        if xPVNodeItem.CheckState <> csUncheckedNormal then
+        begin
+          xPVNodeItem.CheckState := csUncheckedNormal;
+          self.mIntSelCount := Self.mIntSelCount - 1;
+        end;
+      end;
+      SetNodeCheck(xPVNodeItem, pBol);
+    end;
+  end;
+  self.lblSelCount.Caption := self.mIntSelCount.ToString;
+  Application.ProcessMessages;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.SetNodeExpanded(pPVNode: PVirtualNode; pBol: Boolean);
+var
+  xCount, XFNum: integer;
+  xPVNodeItem: PVirtualNode;
+begin
+  xCount := pPVNode.ChildCount;
+  if xCount > 0 then
+  begin
+    vrtstrFolderList.Expanded[pPVNode] := pBol;
+    xPVNodeItem := pPVNode.FirstChild;
+    SetNodeExpanded(xPVNodeItem, pBol);
+    for xCount := 2 to xCount do
+    begin
+      xPVNodeItem := xPVNodeItem.NextSibling;
+      SetNodeExpanded(xPVNodeItem, pBol);
+    end;
+  end;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.tmrLoadTimer(Sender: TObject);
+begin
+  self.tmrLoad.Enabled := false;
+  self.SetControlEnabled(false);
+//  if Assigned(mExThree) then
+//  begin
+//    try
+//      mExThree.FreeThread;
+//    except
+//    end;
+//    mExThree := nil;
+//  end;
+//  mBol := False;
+//  mExThree := TExThread.Create(True);
+//  mExThree.OnExecute := LoadStore;
+//  mExThree.Resume;
+//  while True do
+//  begin
+//    if mBol then
+//      Break;
+//  end;
+  mBolRun := True;
+  mBolExit := False;
+  self.LoadStore;
+  self.vrtstrFolderList.BeginUpdate;
+  self.LoadStoreToTree;
+  Self.ReadTregDate;
+  self.vrtstrFolderList.EndUpdate;
+  Self.pbHandle.Position := Self.pbHandle.Max;
+  Application.ProcessMessages;
+  self.SetControlEnabled(True);
+  mBolRun := false;
+  mBolExit := False;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.LoadStore;
+  procedure GetSubFolder(pLevel: Integer; pSBinary: TSBinary; pxFolderDelectIndex: Integer; pIMS: IMsgStore; pFoldePath: string);
+  var
+    xMAPIFolder_1: IMAPIFolder;
+    xObjType: Cardinal;
+    xFoldersTable_1: MapiDefs.IMAPITable;
+    xFoldersRowCount: Cardinal;
+    xPropTagArray: Globals.PSPropTagArray_100;
+    xArr: array of ULONG;
+    xI, xFNum, xIndex: integer;
+    xFoldersRowSet: PSRowSet;
+    xFoldersRow: TSRow;
+    xSubNodeData: TMAPIFolderItem;
+  begin
+    pIMS.OpenEntry(pSBinary.cb, PENTRYID(pSBinary.lpb), IMAPIFolder, MAPI_BEST_ACCESS, xObjType, IInterface(xMAPIFolder_1));
+    xMAPIFolder_1.GetHierarchyTable(CONVENIENT_DEPTH, xFoldersTable_1);
+    CallProcessMessages;
+    if mBolExit then
+      Exit;
+
+    SetLength(xArr, 4);
+    xArr[0] := PR_DISPLAY_NAME_W;
+    xArr[1] := PR_ENTRYID;
+    xArr[2] := PR_SUBFOLDERS;
+    xArr[3] := PR_CONTENT_COUNT;
+    New(xPropTagArray);
+    xPropTagArray.cValues := Length(xArr);
+    for xI := 0 to length(xArr) - 1 do
+      xPropTagArray.aulPropTag[xI] := xArr[xI];
+    CallProcessMessages;
+    if mBolExit then
+    begin
+      Dispose(PSPropTagArray(xPropTagArray));
+      Exit;
+    end;
+    if Succeeded(xFoldersTable_1.SetColumns(PSPropTagArray(xPropTagArray), TBL_BATCH)) then
+    begin
+      xFoldersTable_1.GetRowCount(0, xFoldersRowCount);
+      xFoldersTable_1.QueryRows(xFoldersRowCount, 0, xFoldersRowSet);
+      if mBolExit then
+      begin
+        Dispose(PSPropTagArray(xPropTagArray));
+        Exit;
+      end;
+      CallProcessMessages;
+      if mBolExit then
+      begin
+        Dispose(PSPropTagArray(xPropTagArray));
+        Exit;
+      end;
+      for xFNum := 0 to xFoldersRowCount - 1 do
+      begin
+        CallProcessMessages;
+        if mBolExit then
+        begin
+          Dispose(PSPropTagArray(xPropTagArray));
+          Exit;
+        end;
+        xFoldersRow := xFoldersRowSet.aRow[xFNum];
+        New(xSubNodeData);
+        xIndex := 0;
+        xSubNodeData.FName := PWideChar(xFoldersRow.lpProps[xIndex].Value.lpszW);
+        xIndex := 1;
+        xSubNodeData.FSBin := CopySBinary(xFoldersRow.lpProps[xIndex].Value.bin);
+        xSubNodeData.FID := ExMAPITSBinaryToEntryID(xSubNodeData.FSBin);
+        xSubNodeData.FLevel := pLevel + 1;
+        xSubNodeData.FolderDelectIndex := pxFolderDelectIndex;
+        xSubNodeData.FPath := pFoldePath;
+        SetLength(self.mMFItemList, Length(self.mMFItemList) + 1);
+        mMFItemList[Length(self.mMFItemList) - 1] := xSubNodeData;
+        xIndex := 2;
+        if xFoldersRow.lpProps[xIndex].Value.b = 1 then
+        begin
+          GetSubFolder(pLevel + 1, xSubNodeData.FSBin, pxFolderDelectIndex, pIMS, xSubNodeData.FPath + xSubNodeData.FPath + '\');
+          CallProcessMessages;
+          if mBolExit then
+          begin
+            Dispose(PSPropTagArray(xPropTagArray));
+            Exit;
+          end;
+        end;
+        xIndex := 3;
+        xSubNodeData.FItemsCount := xFoldersRow.lpProps[xIndex].Value.l;
+      end;
+      try
+        FreeProws(xFoldersRowSet);
+      except
+
+      end;
+      xFoldersRowSet := nil;
+    end;
+    try
+      Dispose(PSPropTagArray(xPropTagArray));
+    except
+    end;
+    xFoldersTable_1 := nil;
+  end;
+
+var
+  xStoresTable: MapiDefs.IMAPITable;
+  xStoresRowCount: Cardinal;
+  xStoreRowSet: PSRowSet;
+  xStoreRow: TSRow;
+  xFNum, xI, xI2, xFNum2, xIndex: Integer;
+  xPropTagArray: Globals.PSPropTagArray_100;
+  xPropTagArray2: Globals.PSPropTagArray_100;
+  xArr: array of ULONG;
+  xArr2: array of ULONG;
+  xPSPropTagArray: PSPropTagArray;
+  xStrStoreName: string;
+  xSBinAry, xSDFpBinary: TSBinary;
+  xMSgStore: IMsgStore;
+  xSPropValue: PSPropValue;
+  xSPropValue_DelectFolder: PSPropValue;
+  xPNode, xPSubNode: PVirtualNode;
+  xNodeData, xSubNodeData: TMAPIFolderItem;
+  xMAPIFolder, xMAPIFolder_Delect: IMAPIFolder;
+  xObjType: Cardinal;
+  xFoldersTable: MapiDefs.IMAPITable;
+  xFoldersRowCount: Cardinal;
+  xFoldersRowSet: PSRowSet;
+  xFoldersRow: TSRow;
+  xBol: Boolean;
+  xFolderDelectIndex: Integer;
+begin
+  GMAPISessionLogonEx.GetMsgStoresTable(0, xStoresTable);
+  xStoresTable.GetRowCount(0, xStoresRowCount);
+  SetLength(self.mMFItemList, 0);
+  self.pbHandle.Min := 0;
+  self.pbHandle.Max := Integer(xStoresRowCount) + 3;
+  Self.pbHandle.Position := 1;
+  application.ProcessMessages;
+  SetLength(xArr, 2);
+  xArr[0] := PR_DISPLAY_NAME_A;
+  xArr[1] := PR_ENTRYID;
+  New(xPropTagArray);
+  xPropTagArray.cValues := Length(xArr);
+  for xI := Low(xArr) to High(xArr) do
+    xPropTagArray.aulPropTag[xI] := xArr[xI];
+  SetLength(xArr2, 4);
+  xArr2[0] := PR_DISPLAY_NAME_W;
+  xArr2[1] := PR_ENTRYID;
+  xArr2[2] := PR_SUBFOLDERS;
+  xArr2[3] := PR_CONTENT_COUNT;
+  New(xPropTagArray2);
+  xPropTagArray2.cValues := Length(xArr2);
+  for xI2 := Low(xArr2) to High(xArr2) do
+    xPropTagArray2.aulPropTag[xI2] := xArr2[xI2];
+  SetLength(gMAPIFolderArr_Deleted, 0);
+  SetLength(gIMsgStoreArr, 0);
+  xBol := Succeeded(xStoresTable.SetColumns(PSPropTagArray(xPropTagArray), TBL_BATCH));
+  if xBol then
+  begin
+    if S_OK = xStoresTable.QueryRows(xStoresRowCount, 0, xStoreRowSet) then
+    begin
+      for xFNum := 0 to xStoresRowCount - 1 do
+      begin
+        CallProcessMessages;
+        if mBolExit then
+        begin
+          Dispose(PSPropTagArray(xPropTagArray));
+          Dispose(PSPropTagArray(xPropTagArray2));
+          Exit;
+        end;
+        xStoreRow := xStoreRowSet.aRow[xFNum];
+        //获取名称
+        xIndex := 0;
+        xStrStoreName := xStoreRow.lpProps[xIndex].Value.lpszA;
+        try
+        //获取ID
+          xIndex := 1;
+          xSBinAry := xStoreRow.lpProps[xIndex].Value.bin;
+          New(xNodeData);
+          xNodeData.FName := xStrStoreName;
+          xNodeData.FSBin := CopySBinary(xSBinAry);
+          xNodeData.FID := ExMAPITSBinaryToEntryID(xNodeData.FSBin);
+          xNodeData.FLevel := 0;
+          SetLength(self.mMFItemList, Length(self.mMFItemList) + 1);
+          mMFItemList[Length(self.mMFItemList) - 1] := xNodeData;
+          CallProcessMessages;
+          if mBolExit then
+          begin
+            Dispose(PSPropTagArray(xPropTagArray));
+            Dispose(PSPropTagArray(xPropTagArray2));
+            Exit;
+          end;
+          GMAPISessionLogonEx.OpenMsgStore(0, xSBinAry.cb, PENTRYID(xSBinAry.lpb), IMsgStore, MAPI_BEST_ACCESS, xMSgStore);
+          SetLength(gIMsgStoreArr, Length(gIMsgStoreArr) + 1);
+          gIMsgStoreArr[Length(gIMsgStoreArr) - 1] := xMSgStore;
+          SetLength(gMAPIFolderArr_Deleted, Length(gMAPIFolderArr_Deleted) + 1);
+          if Succeeded(HrGetOneProp(xMSgStore, PR_IPM_WASTEBASKET_ENTRYID, xSPropValue_DelectFolder)) then
+          begin
+            xMSgStore.OpenEntry(xSPropValue_DelectFolder.Value.bin.cb, PENTRYID(xSPropValue_DelectFolder.Value.bin.lpb), IMAPIFolder, MAPI_BEST_ACCESS, xObjType, IInterface(xMAPIFolder_Delect));
+            gMAPIFolderArr_Deleted[Length(gMAPIFolderArr_Deleted) - 1] := xMAPIFolder_Delect;
+            try
+              MAPIFreeBuffer(xSPropValue_DelectFolder);
+            except
+            end;
+          end
+          else
+          begin
+            gMAPIFolderArr_Deleted[Length(gMAPIFolderArr_Deleted) - 1] := nil;
+          end;
+          CallProcessMessages;
+          xFolderDelectIndex := Length(gMAPIFolderArr_Deleted) - 1;
+          CallProcessMessages;
+          if mBolExit then
+          begin
+            Dispose(PSPropTagArray(xPropTagArray));
+            Dispose(PSPropTagArray(xPropTagArray2));
+            Exit;
+          end;
+          CallProcessMessages;
+          HrGetOneProp(xMSgStore, PR_IPM_SUBTREE_ENTRYID, xSPropValue);
+          xMSgStore.OpenEntry(xSPropValue.Value.bin.cb, PENTRYID(xSPropValue.Value.bin.lpb), IMAPIFolder, MAPI_BEST_ACCESS, xObjType, IInterface(xMAPIFolder));
+          xMAPIFolder.GetHierarchyTable(CONVENIENT_DEPTH, xFoldersTable);
+          try
+            MAPIFreeBuffer(xSPropValue);
+          except
+          end;
+          CallProcessMessages;
+          if Succeeded(xFoldersTable.SetColumns(PSPropTagArray(xPropTagArray2), TBL_BATCH)) then
+          begin
+            xFoldersTable.GetRowCount(0, xFoldersRowCount);
+            xFoldersTable.QueryRows(xFoldersRowCount, 0, xFoldersRowSet);
+            for xFNum2 := 0 to xFoldersRowCount - 1 do
+            begin
+              CallProcessMessages;
+              if mBolExit then
+              begin
+                Dispose(PSPropTagArray(xPropTagArray));
+                Dispose(PSPropTagArray(xPropTagArray2));
+                Exit;
+              end;
+              xFoldersRow := xFoldersRowSet.aRow[xFNum2];
+              New(xSubNodeData);
+              xIndex := 0;
+              xSubNodeData.FName := PWideChar(xFoldersRow.lpProps[xIndex].Value.lpszW); //lpszA;
+              xIndex := 1;
+              xSubNodeData.FSBin := CopySBinary(xFoldersRow.lpProps[xIndex].Value.bin);
+              xSubNodeData.FID := ExMAPITSBinaryToEntryID(xSubNodeData.FSBin);
+              xSubNodeData.FLevel := 1;
+              xSubNodeData.FolderDelectIndex := xFolderDelectIndex;
+              xSubNodeData.FPath := '\\' + xStrStoreName + '\';
+              SetLength(self.mMFItemList, Length(self.mMFItemList) + 1);
+              mMFItemList[Length(self.mMFItemList) - 1] := xSubNodeData;
+              xIndex := 2;
+              CallProcessMessages;
+              if mBolExit then
+              begin
+                Dispose(PSPropTagArray(xPropTagArray));
+                Dispose(PSPropTagArray(xPropTagArray2));
+                Exit;
+              end;
+              if xFoldersRow.lpProps[xIndex].Value.b = 1 then
+              begin
+                GetSubFolder(1, xSubNodeData.FSBin, xFolderDelectIndex, xMSgStore, xSubNodeData.FPath + xSubNodeData.FName + '\');
+              end;
+              xIndex := 3;
+              xSubNodeData.FItemsCount := xFoldersRow.lpProps[xIndex].Value.l;
+            end;
+            try
+              FreeProws(xFoldersRowSet);
+            except
+            end;
+            xFoldersRowSet := nil;
+          end;
+          xFoldersTable := nil;
+          xMAPIFolder := nil;
+          xMSgStore := nil;
+        except
+        end;
+      end;
+      try
+        FreeProws(xStoreRowSet);
+      except
+      end;
+      xStoreRowSet := nil;
+      Self.pbHandle.Position := pbHandle.Position + 1;
+      application.ProcessMessages;
+    end;
+  end;
+  Dispose(PSPropTagArray(xPropTagArray));
+  Dispose(PSPropTagArray(xPropTagArray2));
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.LoadStoreToTree;
+var
+  xFNum: Integer;
+  xPVNode, xPVNode2: PVirtualNode;
+  xPVNData, xPVNData2: TMAPIFolderItem;
+  xLevel, xLevel2, xI: integer;
+begin
+  xLevel := 0;
+  for xFNum := 0 to Length(Self.mMFItemList) - 1 do
+  begin
+    Application.ProcessMessages;
+    xPVNData := mMFItemList[xFNum];
+    xLevel2 := xPVNData.FLevel;
+    if xLevel2 = 0 then
+    begin
+      xLevel := 0;
+      xPVNode := nil;
+    end
+    else
+    begin
+      if xLevel2 > xLevel then
+      begin
+//        xPVNode := xPVNode.Parent
+      end
+      else if xLevel2 = xLevel then
+      begin
+        xPVNode := xPVNode.Parent;
+      end
+      else if xLevel2 < xLevel then
+      begin
+        for xI := xLevel2 to xLevel do
+          xPVNode := xPVNode.Parent;
+      end;
+      xLevel := xLevel2;
+    end;
+    xPVNode2 := self.vrtstrFolderList.AddChild(xPVNode);
+    if xPVNode <> nil then
+    begin
+      xPVNode2.CheckType := ctCheckBox;
+      xPVNode2.CheckState := csunCheckedNormal;
+      self.vrtstrFolderList.Expanded[xPVNode] := True;
+    end;
+
+    xPVNData2 := self.vrtstrFolderList.GetNodeData(xPVNode2);
+    xPVNData2.FName := xPVNData.FName;
+    xPVNData2.FID := xPVNData.FID;
+    xPVNData2.SID := xPVNData.SID;
+    xPVNData2.FSBin := CopySBinary(xPVNData.FSBin);
+    xPVNData2.FID := ExMAPITSBinaryToEntryID(xPVNData2.FSBin);
+    xPVNData2.FLevel := xPVNData.FLevel;
+//    xPVNData2.FSBin_D := CopySBinary(xPVNData.FSBin_D);
+    xPVNData2.FPath := xPVNData.FPath;
+    xPVNData2.IntType := xPVNData.IntType;
+    xPVNData2.FolderDelectIndex := xPVNData.FolderDelectIndex;
+    xPVNData2.FItemsCount := xPVNData.FItemsCount;
+    xPVNode := xPVNode2;
+  end;
+  Self.SetControlEnabled(True);
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.mniSelectAllClick(Sender: TObject);
+var
+  xPVNode: PVirtualNode;
+begin
+  inherited;
+  Self.vrtstrFolderList.BeginUpdate;
+  xPVNode := nil;
+  xPVNode := self.vrtstrFolderList.GetFirst(False);
+  self.mIntSelCount := 0;
+  while xPVNode <> nil do
+  begin
+//    xPVNode.CheckState := csCheckedNormal;
+//    mIntSelCount := mIntSelCount + 1;
+    SetNodeCheck(xPVNode, true);
+    try
+      xPVNode := xPVNode.NextSibling;
+    except
+      xPVNode := nil;
+    end;
+  end;
+  self.vrtstrFolderList.EndUpdate;
+  Self.lblSelCount.Caption := Self.mIntSelCount.ToString;
+  Application.ProcessMessages;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.mniFoldClick(Sender: TObject);
+var
+  xPVNode: PVirtualNode;
+begin
+  inherited;
+  Self.vrtstrFolderList.BeginUpdate;
+  xPVNode := nil;
+  xPVNode := self.vrtstrFolderList.GetFirst(False);
+  while xPVNode <> nil do
+  begin
+    SetNodeExpanded(xPVNode, False);
+    try
+      xPVNode := xPVNode.NextSibling;
+    except
+      xPVNode := nil;
+    end;
+  end;
+  self.vrtstrFolderList.EndUpdate;
+
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.mniSelectNodeClick(Sender: TObject);
+var
+  xPVNode: PVirtualNode;
+begin
+  inherited;
+  Self.vrtstrFolderList.BeginUpdate;
+  xPVNode := nil;
+  xPVNode := Self.vrtstrFolderList.GetFirst(False);
+
+  while xPVNode <> nil do
+  begin
+    xPVNode.CheckState := csUncheckedNormal;
+    SetNodeCheck(xPVNode, False);
+    try
+      xPVNode := xPVNode.NextSibling;
+    except
+      xPVNode := nil;
+    end;
+  end;
+  Self.vrtstrFolderList.EndUpdate;
+  self.mIntSelCount := 0;
+  self.lblSelCount.Caption := '0';
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.mniSelectAllSubClick(Sender: TObject);
+var
+  xPVNode: PVirtualNode;
+begin
+  inherited;
+  Self.vrtstrFolderList.BeginUpdate;
+  xPVNode := nil;
+  xPVNode := mSelectPNode;
+
+//  xPVNode.CheckState := csCheckedNormal;
+  SetNodeCheck(xPVNode, true);
+
+  self.vrtstrFolderList.EndUpdate;
+
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.mniSelectNodeSubClick(Sender: TObject);
+var
+  xPVNode: PVirtualNode;
+begin
+  inherited;
+  Self.vrtstrFolderList.BeginUpdate;
+  xPVNode := nil;
+  xPVNode := mSelectPNode;
+
+//  xPVNode.CheckState := csUncheckedNormal;
+  SetNodeCheck(xPVNode, False);
+
+  Self.vrtstrFolderList.EndUpdate;
+
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.mniUnFoldSubClick(Sender: TObject);
+var
+  xPVNode: PVirtualNode;
+begin
+  inherited;
+  Self.vrtstrFolderList.BeginUpdate;
+  xPVNode := nil;
+  xPVNode := self.vrtstrFolderList.GetFirst(False);
+  while xPVNode <> nil do
+  begin
+    SetNodeExpanded(xPVNode, true);
+    try
+      xPVNode := xPVNode.NextSibling;
+    except
+      xPVNode := nil;
+    end;
+  end;
+  self.vrtstrFolderList.EndUpdate;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.vrtstrFolderListChecked(Sender: TBaseVirtualTree; Node: PVirtualNode);
+begin
+  inherited;
+  if Node.CheckState = csCheckedNormal then
+    mIntSelCount := mIntSelCount + 1
+  else if Node.CheckState = csUNCheckedNormal then
+    mIntSelCount := mIntSelCount - 1;
+  Self.lblSelCount.Caption := mIntSelCount.ToString;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.vrtstrFolderListContextPopup(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
+var
+  xPt: TPoint;
+  xPNode: PVirtualNode;
+  xCData: TMAPIFolderItem;
+begin
+  inherited;
+  GetCursorPos(xPt);
+  xPNode := nil;
+  try
+    xPNode := Self.vrtstrFolderList.GetNodeAt(MousePos.X, MousePos.Y);
+  except
+  end;
+  if xPNode <> nil then
+  begin
+    mSelectPNode := xPNode;
+    self.vrtstrFolderList.ClearSelection;
+    Self.vrtstrFolderList.Selected[xPNode] := True;
+    vrtstrFolderList.Expanded[xPNode] := True; //展开子项
+    xCData := Self.vrtstrFolderList.GetNodeData(xPNode);
+    self.mniSelectAll.Enabled := true;
+    Self.mniSelectNode.Enabled := true;
+    self.mniSelectAllSub.Enabled := true;
+    self.mniSelectNodeSub.Enabled := true;
+    self.mniUnFoldSub.Enabled := true;
+    self.mniFold.Enabled := true;
+    pmSelect.Popup(xPt.X, xPt.Y);
+  end
+  else
+  begin
+    self.mniSelectAll.Enabled := true;
+    Self.mniSelectNode.Enabled := true;
+    self.mniSelectAllSub.Enabled := False;
+    self.mniSelectNodeSub.Enabled := False;
+    self.mniUnFoldSub.Enabled := true;
+    self.mniFold.Enabled := true;
+    pmSelect.Popup(xPt.X, xPt.Y);
+    mSelectPNode := nil;
+  end;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.vrtstrFolderListFreeNode(Sender: TBaseVirtualTree; Node: PVirtualNode);
+var
+  xNodeData: TMAPIFolderItem;
+begin
+  inherited;
+  xNodeData := Sender.GetNodeData(Node);
+  if xNodeData.FSBin.cb > 0 then
+  begin
+    FreeMemory(xNodeData.FSBin.lpb);
+    //  FreeMemory(xNodeData.FSBin_D.lpb);
+  end;
+  Finalize(xNodeData^);
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.vrtstrFolderListGetImageIndex(Sender: TBaseVirtualTree; Node: PVirtualNode; Kind: TVTImageKind; Column: TColumnIndex; var Ghosted: Boolean; var ImageIndex: TImageIndex);
+var
+  xNodeData: TMAPIFolderItem;
+begin
+  inherited;
+
+  if Column = 0 then
+  begin
+    case Kind of
+      ikNormal, ikSelected:
+        begin
+          xNodeData := Sender.GetNodeData(Node);
+          if xNodeData.FLevel = 0 then
+            //数据文件
+            ImageIndex := 8
+          else if xNodeData.FLevel <> 0 then
+            ImageIndex := 2;
+        end;
+    end;
+  end;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.vrtstrFolderListGetText(Sender: TBaseVirtualTree; Node: PVirtualNode; Column: TColumnIndex; TextType: TVSTTextType; var CellText: string);
+var
+  xNodeData: TMAPIFolderItem;
+  xStr: string;
+begin
+  try
+    xNodeData := Sender.GetNodeData(Node);
+    if Column = 0 then
+    begin
+      xStr := xNodeData.FName;
+      if (xNodeData.FLevel > 0) and (xNodeData.FItemsCount > 0) then
+      begin
+        xStr := xStr + '(' + xNodeData.FItemsCount.ToString + ')';
+      end;
+      CellText := xStr;
+
+    end;
+  except
+    CellText := 'Null';
+  end;
+
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.vrtstrFolderListInitNode(Sender: TBaseVirtualTree; ParentNode, Node: PVirtualNode; var InitialStates: TVirtualNodeInitStates);
+begin
+  Sender.NodeHeight[Node] := mIntNodeHeight;
+end;
+
+//procedure TFrmDuplicateMailsInFoldersMain.CallProcessMessages;
+//begin
+//  if self.mIntCallPMNum >= 200 then
+//  begin
+//    Application.ProcessMessages;
+//    mIntCallPMNum := 1;
+//  end
+//  else
+//    mIntCallPMNum := mIntCallPMNum + 1;
+//end;
+
+//保持数据到注册表
+procedure TFrmDuplicateMailsInFoldersMain.SaveTregDate;
+var
+  treg: TRegistry;
+  xStrSelectCFId: string;
+  xFNum: Integer;
+  xFCount: Integer;
+begin
+  treg := TRegistry.Create;
+  //设置注册表类型
+  treg.RootKey := HKEY_CURRENT_USER;
+  //打开注册表，没有则创建
+  treg.OpenKey('SOFTWARE\ExtendOffice\Kutools for Outlook\Contacts\KutoolsDuplicateMailsInFolders', True);
+  treg.WriteBool('chkScreenAllFolder', chkScreenAllFolder.Checked);
+  xStrSelectCFId := '';
+  {$REGION '取消拼接的方式，改用单个存储'}
+//  for xFNum := 0 to Length(gMAPIFolderSelectionArr) - 1 do
+//  begin
+//    xStrSelectCFId := xStrSelectCFId + gMAPIFolderSelectionArr[xFNum].FID + ';';
+//  end;
+//  treg.WriteString('ArrSelectFolderID', xStrSelectCFId);
+{$ENDREGION}
+  //删除原有的
+  xFCount := 0;
+  if treg.ValueExists('SelectionFolderCount') then
+  begin
+    xFCount := treg.ReadInteger('SelectionFolderCount');
+    for xFNum := 1 to xFCount do
+    begin
+      treg.DeleteKey('SelectionFolderItem' + xFNum.ToString);
+    end;
+  end;
+  //新添加
+  xFCount := Length(gMAPIFolderSelectionArr);
+  treg.WriteInteger('SelectionFolderCount', xFCount);
+  for xFNum := 1 to xFCount do
+  begin
+    try
+      treg.WriteString('SelectionFolderItem' + xFNum.ToString, gMAPIFolderSelectionArr[xFNum - 1].FID);
+    except
+    end;
+  end;
+  //关闭对象
+  treg.CloseKey;
+  //清空缓存
+  treg.Destroy;
+end;
+
+procedure TFrmDuplicateMailsInFoldersMain.ReadTregDate;
+
+  function CheckNodeInFID(pVNode: PVirtualNode; pFID: string): Boolean;
+  var
+    xNodeData: TMAPIFolderItem;
+    xFVNode: PVirtualNode;
+  begin
+    Result := False;
+    xFVNode := pVNode.FirstChild;
+    while xFVNode <> nil do
+    begin
+      xNodeData := self.vrtstrFolderList.GetNodeData(xFVNode);
+      if xNodeData.FID = pFID then
+      begin
+        if xFVNode.CheckState <> csCheckedNormal then
+        begin
+          xFVNode.CheckState := csCheckedNormal;
+          self.mIntSelCount := mIntSelCount + 1;
+          Self.lblSelCount.Caption := mIntSelCount.ToString;
+          Application.ProcessMessages;
+        end;
+        Result := true;
+        Exit;
+      end;
+      if xFVNode.ChildCount > 0 then
+      begin
+        if CheckNodeInFID(xFVNode, pFID) then
+        begin
+          Result := true;
+          Exit;
+        end;
+      end;
+      xFVNode := xFVNode.NextSibling;
+    end;
+
+  end;
+
+var
+  treg: TRegistry;
+  xStrProperty: string;
+  xStrResult: string;
+  xStrSelectCFId: string;
+//  xArrStrSelectCFId: TArray<string>;
+  xFNum: Integer;
+  xVNode: PVirtualNode;
+  xBol: Boolean;
+  xSFolderCount: integer;
+  xStrFID: string;
+begin
+  treg := TRegistry.Create;
+  //设置注册表类型
+  treg.RootKey := HKEY_CURRENT_USER;
+  try
+    //打开注册表
+    if treg.OpenKey('SOFTWARE\ExtendOffice\Kutools for Outlook\Contacts\KutoolsDuplicateMailsInFolders', False) then
+    begin
+      Application.ProcessMessages;
+      try
+        self.chkScreenAllFolder.Checked := treg.ReadBool('chkScreenAllFolder');
+      except
+      end;
+      if treg.ValueExists('SelectionFolderCount') then
+      begin
+        xSFolderCount := treg.ReadInteger('SelectionFolderCount');
+        for xFNum := 1 to xSFolderCount do
+        begin
+          if treg.ValueExists('SelectionFolderItem' + xFNum.ToString) then
+          begin
+            xStrFID := treg.ReadString('SelectionFolderItem' + xFNum.ToString);
+            xVNode := Self.vrtstrFolderList.GetFirst(False);
+            while xVNode <> nil do
+            begin
+              self.CallProcessMessages;
+              if xVNode.ChildCount > 0 then
+              begin
+                if CheckNodeInFID(xVNode, xStrFID) then
+                begin
+                  xVNode := nil;
+                  Continue;
+                end;
+              end;
+              try
+                xVNode := xVNode.NextSibling;
+              except
+                xVNode := nil
+              end;
+            end;
+          end;
+        end;
+      end;
+
+//      xStrSelectCFId := treg.ReadString('SelectionFolderCount');
+//      xArrStrSelectCFId := TRegEx.Split(xStrSelectCFId, ';');
+//      //还原勾选
+//      for xFNum := 0 to Length(xArrStrSelectCFId) - 2 do
+//      begin
+//        xVNode := Self.vrtstrFolderList.GetFirst(False);
+//        while xVNode <> nil do
+//        begin
+//          if xVNode.ChildCount > 0 then
+//          begin
+//            if CheckNodeInFID(xVNode, xArrStrSelectCFId[xFNum]) then
+//            begin
+//              xVNode := nil;
+//              Continue;
+//            end;
+//          end;
+//          try
+//            xVNode := xVNode.NextSibling;
+//          except
+//            xVNode := nil
+//          end;
+//        end;
+//      end;
+
+    end;
+  except
+
+  end;
+  //关闭
+  treg.CloseKey;
+  //清除缓存
+  treg.Destroy;
+end;
+
+end.
+
